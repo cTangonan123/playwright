@@ -14,34 +14,38 @@
  * limitations under the License.
  */
 
-import type * as channels from '@protocol/channels';
-import type { LookupAddress } from 'dns';
-import http from 'http';
-import https from 'https';
-import type { Readable, TransformCallback } from 'stream';
-import { pipeline, Transform } from 'stream';
-import url from 'url';
-import zlib from 'zlib';
-import type { HTTPCredentials } from '../../types/types';
+import * as http from 'http';
+import * as https from 'https';
+import { Transform, pipeline } from 'stream';
+import { TLSSocket } from 'tls';
+import * as url from 'url';
+import * as zlib from 'zlib';
+
 import { TimeoutSettings } from '../common/timeoutSettings';
+import { assert, constructURLBasedOnBaseURL, createGuid, eventsHelper, monotonicTime  } from '../utils';
 import { getUserAgent } from '../utils/userAgent';
-import { assert, constructURLBasedOnBaseURL, createGuid, eventsHelper, monotonicTime, type RegisteredListener } from '../utils';
 import { HttpsProxyAgent, SocksProxyAgent } from '../utilsBundle';
 import { BrowserContext, verifyClientCertificates } from './browserContext';
 import { CookieStore, domainMatches, parseRawCookie } from './cookieStore';
 import { MultipartFormData } from './formData';
-import { httpHappyEyeballsAgent, httpsHappyEyeballsAgent, timingForSocket } from '../utils/happy-eyeballs';
-import type { CallMetadata } from './instrumentation';
 import { SdkObject } from './instrumentation';
+import { ProgressController } from './progress';
+import { getMatchingTLSOptionsForOrigin, rewriteOpenSSLErrorIfNeeded } from './socksClientCertificatesInterceptor';
+import { httpHappyEyeballsAgent, httpsHappyEyeballsAgent, timingForSocket } from '../utils/happy-eyeballs';
+import { Tracing } from './trace/recorder/tracing';
+
+import type { CallMetadata } from './instrumentation';
 import type { Playwright } from './playwright';
 import type { Progress } from './progress';
-import { ProgressController } from './progress';
-import { Tracing } from './trace/recorder/tracing';
 import type * as types from './types';
 import type { HeadersArray, ProxySettings } from './types';
-import { getMatchingTLSOptionsForOrigin, rewriteOpenSSLErrorIfNeeded } from './socksClientCertificatesInterceptor';
+import type { HTTPCredentials } from '../../types/types';
+import type { RegisteredListener } from '../utils';
+import type * as channels from '@protocol/channels';
 import type * as har from '@trace/har';
-import { TLSSocket } from 'tls';
+import type { LookupAddress } from 'dns';
+import type { Readable, TransformCallback } from 'stream';
+
 
 type FetchRequestOptions = {
   userAgent: string;
@@ -133,7 +137,7 @@ export abstract class APIRequestContext extends SdkObject {
   abstract _defaultOptions(): FetchRequestOptions;
   abstract _addCookies(cookies: channels.NetworkCookie[]): Promise<void>;
   abstract _cookies(url: URL): Promise<channels.NetworkCookie[]>;
-  abstract storageState(): Promise<channels.APIRequestContextStorageStateResult>;
+  abstract storageState(indexedDB?: boolean): Promise<channels.APIRequestContextStorageStateResult>;
 
   private _storeResponseBody(body: Buffer): string {
     const uid = createGuid();
@@ -618,8 +622,8 @@ export class BrowserContextAPIRequestContext extends APIRequestContext {
     return await this._context.cookies(url.toString());
   }
 
-  override async storageState(): Promise<channels.APIRequestContextStorageStateResult> {
-    return this._context.storageState();
+  override async storageState(indexedDB?: boolean): Promise<channels.APIRequestContextStorageStateResult> {
+    return this._context.storageState(indexedDB);
   }
 }
 
@@ -644,7 +648,7 @@ export class GlobalAPIRequestContext extends APIRequestContext {
       proxy.server = url;
     }
     if (options.storageState) {
-      this._origins = options.storageState.origins;
+      this._origins = options.storageState.origins?.map(origin => ({ indexedDB: [], ...origin }));
       this._cookieStore.addCookies(options.storageState.cookies || []);
     }
     verifyClientCertificates(options.clientCertificates);
@@ -684,10 +688,10 @@ export class GlobalAPIRequestContext extends APIRequestContext {
     return this._cookieStore.cookies(url);
   }
 
-  override async storageState(): Promise<channels.APIRequestContextStorageStateResult> {
+  override async storageState(indexedDB = true): Promise<channels.APIRequestContextStorageStateResult> {
     return {
       cookies: this._cookieStore.allCookies(),
-      origins: this._origins || []
+      origins: (this._origins || []).map(origin => ({ ...origin, indexedDB: indexedDB ? origin.indexedDB : [] })),
     };
   }
 }

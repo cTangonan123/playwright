@@ -14,20 +14,24 @@
  * limitations under the License.
  */
 
-import fs from 'fs';
-import path from 'path';
-import { captureRawStack, monotonicTime, zones, sanitizeForFilePath, stringifyStackFrames } from 'playwright-core/lib/utils';
-import type { TestInfo, TestStatus, FullProject, TestStepInfo } from '../../types/test';
-import type { AttachmentPayload, StepBeginPayload, StepEndPayload, TestInfoErrorImpl, WorkerInitParams } from '../common/ipc';
-import type { TestCase } from '../common/test';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { captureRawStack, monotonicTime, sanitizeForFilePath, stringifyStackFrames, zones } from 'playwright-core/lib/utils';
+
 import { TimeoutManager, TimeoutManagerError, kMaxDeadline } from './timeoutManager';
-import type { RunnableDescription } from './timeoutManager';
-import type { Annotation, FullConfigInternal, FullProjectInternal } from '../common/config';
-import type { FullConfig, Location } from '../../types/testReporter';
 import { debugTest, filteredStackTrace, formatLocation, getContainedPath, normalizeAndSaveAttachment, trimLongString, windowsFilesystemFriendlyLength } from '../util';
 import { TestTracing } from './testTracing';
-import type { StackFrame } from '@protocol/channels';
 import { testInfoError } from './util';
+
+import type { RunnableDescription } from './timeoutManager';
+import type { FullProject, TestInfo, TestStatus, TestStepInfo } from '../../types/test';
+import type { FullConfig, Location } from '../../types/testReporter';
+import type { Annotation, FullConfigInternal, FullProjectInternal } from '../common/config';
+import type { AttachmentPayload, StepBeginPayload, StepEndPayload, TestInfoErrorImpl, WorkerInitParams } from '../common/ipc';
+import type { TestCase } from '../common/test';
+import type { StackFrame } from '@protocol/channels';
+
 
 export interface TestStepInternal {
   complete(result: { error?: Error | unknown, suggestedRebaseline?: string }): void;
@@ -270,7 +274,7 @@ export class TestInfoImpl implements TestInfo {
       ...data,
       steps: [],
       attachmentIndices,
-      info: new TestStepInfoImpl(),
+      info: new TestStepInfoImpl(this, stepId),
       complete: result => {
         if (step.endWallTime)
           return;
@@ -417,7 +421,7 @@ export class TestInfoImpl implements TestInfo {
     step.complete({});
   }
 
-  private _attach(attachment: TestInfo['attachments'][0], stepId: string | undefined) {
+  _attach(attachment: TestInfo['attachments'][0], stepId: string | undefined) {
     const index = this._attachmentsPush(attachment) - 1;
     if (stepId) {
       this._stepMap.get(stepId)!.attachmentIndices.push(index);
@@ -510,6 +514,14 @@ export class TestInfoImpl implements TestInfo {
 export class TestStepInfoImpl implements TestStepInfo {
   annotations: Annotation[] = [];
 
+  private _testInfo: TestInfoImpl;
+  private _stepId: string;
+
+  constructor(testInfo: TestInfoImpl, stepId: string) {
+    this._testInfo = testInfo;
+    this._stepId = stepId;
+  }
+
   async _runStepBody<T>(skip: boolean, body: (step: TestStepInfo) => T | Promise<T>) {
     if (skip) {
       this.annotations.push({ type: 'skip' });
@@ -522,6 +534,14 @@ export class TestStepInfoImpl implements TestStepInfo {
         return undefined as T;
       throw e;
     }
+  }
+
+  _attachToStep(attachment: TestInfo['attachments'][0]): void {
+    this._testInfo._attach(attachment, this._stepId);
+  }
+
+  async attach(name: string, options?: { body?: string | Buffer; contentType?: string; path?: string; }): Promise<void> {
+    this._attachToStep(await normalizeAndSaveAttachment(this._testInfo.outputPath(), name, options));
   }
 
   skip(...args: unknown[]) {
